@@ -1,99 +1,72 @@
 from collections.abc import Iterator
+from threading import Event
 
-from pyaudiowpatch import PyAudio, Stream
 import pyaudiowpatch as pyaudio
+from pyaudiowpatch import PyAudio, Stream
 
 from audio.device_manager import DeviceManager
-from dto.audio_device import AudioDevice, DeviceType
+from dto.audio_device import DeviceType
 
 
 class AudioCapture:
 
-    def __init__(self, audio: PyAudio, device_manager: DeviceManager):
+    def __init__(
+        self,
+        audio: PyAudio,
+        device_manager: DeviceManager,
+    ):
         self.audio = audio
         self.device_manager = device_manager
+
         self._streams: dict[DeviceType, Stream] = {}
 
-    def open_streams(
+    def capture(
         self,
         *,
-        microphone: bool = False,
-        loopback: bool = False,
+        loopback: bool = True,
+        sample_rate: int = 16000,
+        channels: int = 2,
         frames_per_buffer: int = 1024,
-    ) -> None:
-        if not microphone and not loopback:
+    ) -> Iterator[bytes]:
 
-            raise ValueError("At least one capture source must be enabled")
-        
-        if self._streams:
+        if not loopback:
+            raise ValueError("Loopback capture is required")
 
-            raise RuntimeError("Capture streams are already open")
-        
-        if frames_per_buffer <= 0:
-            raise ValueError("frames_per_buffer must be positive")
+        if DeviceType.LOOPBACK in self._streams:
+            raise RuntimeError("Loopback stream is already open")
 
-        devices: list[AudioDevice] = []
+        device = self.device_manager.get_default_loopback()
 
-        if microphone:
-            devices.append(self.device_manager.get_default_microphone())
+        stream = self.audio.open(
+            format=pyaudio.paInt16,
+            channels=channels,
+            rate=sample_rate,
+            input=True,
+            input_device_index=device.index,
+            frames_per_buffer=frames_per_buffer,
+        )
 
-        if loopback:
-            devices.append(self.device_manager.get_default_loopback())
+        self._streams[DeviceType.LOOPBACK] = stream
 
-        opened: dict[DeviceType, Stream] = {}
         try:
-            for device in devices:
-                opened[device.device_type] = self.audio.open(
-                    format=pyaudio.paInt16,
-                    channels=device.channels,
-                    rate=device.sample_rate,
-                    input=True,
-                    input_device_index=device.index,
-                    frames_per_buffer=frames_per_buffer,
+            while True:
+
+                audio_chunk = stream.read(
+                    num_frames=frames_per_buffer,
+                    exception_on_overflow=False,
                 )
-        except Exception:
-            for stream in opened.values():
-                self._close_stream(stream)
-            raise
 
-        self._streams = opened
+                yield audio_chunk
 
-    def read(
-        self,
-        frames_per_buffer: int = 1024,
-    ) -> dict[DeviceType, bytes]:
-        
-        if not self._streams:
-
-            raise RuntimeError("No capture streams are open")
-        
-        if frames_per_buffer <= 0:
-            raise ValueError("frames_per_buffer must be positive")
-
-        return {
-            device_type: stream.read(
-                frames_per_buffer,
-                exception_on_overflow=False,
-            )
-            for device_type, stream in self._streams.items()
-        }
-
-    def read_loop(
-        self,
-        frames_per_buffer: int = 1024,
-    ) -> Iterator[dict[DeviceType, bytes]]:
-        while self._streams:
-            yield self.read(frames_per_buffer)
-
-    def close(self) -> None:
-        streams = tuple(self._streams.values())
-        self._streams.clear()
-        for stream in streams:
+        finally:
+            self._streams.pop(DeviceType.LOOPBACK, None)
             self._close_stream(stream)
+
 
 
     @staticmethod
     def _close_stream(stream: Stream) -> None:
         if stream.is_active():
             stream.stop_stream()
+
         stream.close()
