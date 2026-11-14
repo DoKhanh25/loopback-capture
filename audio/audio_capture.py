@@ -6,6 +6,8 @@ from pyaudiowpatch import PyAudio, Stream
 
 from audio.device_manager import DeviceManager
 from dto.audio_device import DeviceType
+from config import AudioConfig
+
 
 
 class AudioCapture:
@@ -17,16 +19,31 @@ class AudioCapture:
     ):
         self.audio = audio
         self.device_manager = device_manager
-
+        self._stop_event = Event()
         self._streams: dict[DeviceType, Stream] = {}
 
+
+    """
+    Prepare new capture session.
+    Must be called after starting the capture thread.
+    """
+    def prepare(self) -> None:
+        if DeviceType.LOOPBACK in self._streams: 
+            raise RuntimeError("Capture is already running")
+
+        self._stop_event.clear()
+
+
+    """
+    Capture sound from device loopback
+    """
     def capture(
         self,
         *,
         loopback: bool = True,
-        sample_rate: int = 16000,
-        channels: int = 2,
-        frames_per_buffer: int = 1024,
+        sample_rate: int = AudioConfig.input_rate,
+        channels: int = AudioConfig.input_channel,
+        frames_per_buffer: int = AudioConfig.frames_per_buffer,
     ) -> Iterator[bytes]:
 
         if not loopback:
@@ -49,7 +66,7 @@ class AudioCapture:
         self._streams[DeviceType.LOOPBACK] = stream
 
         try:
-            while True:
+            while not self._stop_event.is_set():
 
                 audio_chunk = stream.read(
                     num_frames=frames_per_buffer,
@@ -59,14 +76,19 @@ class AudioCapture:
                 yield audio_chunk
 
         finally:
-            self._streams.pop(DeviceType.LOOPBACK, None)
-            self._close_stream(stream)
+            self.cleanup(stream=stream)
 
 
+    def request_stop_thread(self): 
+        self._stop_event.set()
 
-    @staticmethod
-    def _close_stream(stream: Stream) -> None:
-        if stream.is_active():
+
+    def cleanup(self, stream: Stream) -> None: 
+
+        self._streams.pop(DeviceType.LOOPBACK, None)
+        
+        if stream.is_active(): 
             stream.stop_stream()
 
         stream.close()
+

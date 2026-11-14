@@ -18,7 +18,7 @@ class AudioPreprocess:
         self.chunk_duration_ms = chunk_duration_ms
 
         self.resampler = soxr.ResampleStream(
-            in_rate=self.input_rate,
+            in_rate=self.input_rate,    
             out_rate=self.output_rate,
             num_channels=1,
             dtype="float32",
